@@ -60,36 +60,33 @@ resource "aws_iam_role_policy_attachment" "rabbit_asg_policy_attach" {
   role       = aws_iam_role.rabbit_role.name
   policy_arn = aws_iam_policy.rabbit_asg_policy.arn
 }
-
 resource "aws_iam_role_policy_attachment" "rabbit_asg_logging_policy_attach" {
   role       = aws_iam_role.rabbit_role.name
   policy_arn = aws_iam_policy.rabbit_asg_logging_policy.arn
 }
-
 resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
   role       = aws_iam_role.rabbit_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
-
 resource "aws_iam_role_policy_attachment" "ec2_container_registry_full_access" {
   role       = aws_iam_role.rabbit_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
 }
 
-
-
+# Creating a Load Balancer of type Application.
 resource "aws_lb" "name" {
     name               = "example-lb"
     internal           = false
     load_balancer_type = "application"
-    subnets            = ["subnet-02afb2885082aabaf", "subnet-024bee7d7c80272a9"]
+    subnets            = ["subnet-0667527d3f2978cb7", "subnet-0b638d2e760eadecc"]
     security_groups    = [aws_security_group.example_sg.id]
 }
 
+# Target group for RabbitMQ on port 15672, with health checks.
 resource "aws_lb_target_group" "rabbitmq_tg" {
   name     = "rabbitmq-tg"
   port     = 15672  
-  vpc_id   = "vpc-02249be70919abaa2"  
+  vpc_id   = "vpc-0514a72310ee9f821"  
   protocol = "HTTP"
 
   health_check {
@@ -102,6 +99,7 @@ resource "aws_lb_target_group" "rabbitmq_tg" {
   }
 }
 
+# Load Balancer is listening for HTTP on port 15672.
 resource "aws_lb_listener" "alb_listener" {
   load_balancer_arn = aws_lb.name.arn
   port              = 15672 
@@ -113,21 +111,21 @@ resource "aws_lb_listener" "alb_listener" {
   }
 }
 
+# Internal Load Balancer for RabbitMQ.
 resource "aws_lb" "rabbitmq_internal_nlb" {
   name               = "rabbitmq-internal-nlb"
   internal           = true  # Set to true if you want the NLB to be internal
   load_balancer_type = "network"
-  subnets            = ["subnet-02afb2885082aabaf", "subnet-024bee7d7c80272a9"]
+  subnets            = ["subnet-0667527d3f2978cb7", "subnet-0b638d2e760eadecc"]
   enable_cross_zone_load_balancing = false
   security_groups = [aws_security_group.example_sg.id]
 }
 
-
-
+# Additional target group for RabbitMQ on port 5672 with health checks.
 resource "aws_lb_target_group" "rabbitmq_nlb_tg" {
   name     = "rabbitmq-nlb-tg"
   port     = 5672  # Ensure this is the correct port for your application
-  vpc_id   = "vpc-02249be70919abaa2"
+  vpc_id   = "vpc-0514a72310ee9f821"
   protocol = "TCP"
 
   health_check {
@@ -140,6 +138,7 @@ resource "aws_lb_target_group" "rabbitmq_nlb_tg" {
   }
 }
 
+# Listener for internal load balancer on port 5672.
 resource "aws_lb_listener" "nlb_listener" {
   load_balancer_arn = aws_lb.rabbitmq_internal_nlb.arn
   port              = 5672  # The listening port for your NLB
@@ -151,17 +150,13 @@ resource "aws_lb_listener" "nlb_listener" {
   }
 }
 
-
-
-
-
+# A template for launching EC2 instances, including settings such as operating system, instance type, access keys, and init code that installs Docker and configures RabbitMQ.
 resource "aws_launch_template" "example" {
   name          = "example-template"
   image_id      = var.ami
   instance_type = var.instance_type
   key_name      = "mykey"
   user_data = base64encode(data.template_file.init.rendered)
-
 
   vpc_security_group_ids = [aws_security_group.example_sg.id]
 
@@ -184,7 +179,6 @@ resource "aws_launch_template" "example" {
   iam_instance_profile {
     name = aws_iam_instance_profile.rabbit_instance_profile.name
   }
-
 }
 
 resource "aws_iam_instance_profile" "rabbit_instance_profile" {
@@ -192,8 +186,9 @@ resource "aws_iam_instance_profile" "rabbit_instance_profile" {
   role = aws_iam_role.rabbit_role.name
 }
 
-
-
+# Installing Docker.
+# Creating a file system to hold RabbitMQ data.
+# Setting up a configuration file for RabbitMQ and installing it using Docker.
 data "template_file" "init" {
   template = <<-EOF
 #!/bin/bash
@@ -218,11 +213,8 @@ sudo systemctl start docker
 # Set up perms
 sudo usermod -aG docker $USER
 
-
 # Create EBS volume mount for RabbitMQ to persist the data
 sudo sed -i '$a/dev/xvda /var/lib/rabbitmq/ auto defaults,nofail 0 2' /etc/fstab && sudo mount -a
-
-
 
 # Create the configuration file
 cat << ZOF > /rabbitconf/config.conf
@@ -240,8 +232,6 @@ docker run -d --name temp-container --rm -v rabbit_config_volume:/rabbit_config_
 docker cp /rabbitmq/config.conf temp-container:/rabbit_config_volume/
 docker stop temp-container
 
-
-
 # Create a volume and run the rabbitmq container 
 docker volume create rabbit_config_volume
 docker run -d --name rabbit \
@@ -252,16 +242,11 @@ docker run -d --name rabbit \
   rabbitmq:3.13.0 \
   rabbitmq-plugins --offline enable rabbitmq_peer_discovery_aws
 
-
 # addtional setup
 docker exec -d rabbit rabbitmq-server
 # Enabling plugins
 rabbitmq-plugins enable rabbitmq_management
 rabbitmq-plugins --offline enable rabbitmq_peer_discovery_aws
-
-
-
-
 
 docker run -d --name rabbit \
   --network host \
@@ -270,17 +255,14 @@ docker run -d --name rabbit \
     rabbitmq:3.13.0 
     
 EOF 
-
 }
 
-
-
+# A security group that defines rules for traversing network traffic for EC2 instances.
 resource "aws_security_group" "example_sg" {
   name        = "example-sg"
   description = "Example Security Group"
   vpc_id      = var.my_vpc_id
 }
-
 resource "aws_security_group_rule" "rule1" {
   type        = "ingress"
   from_port   = 35197
@@ -289,7 +271,6 @@ resource "aws_security_group_rule" "rule1" {
   cidr_blocks = ["0.0.0.0/0"]
   security_group_id = aws_security_group.example_sg.id
 }
-
 resource "aws_security_group_rule" "rule15" {
   type        = "ingress"
   from_port   = 15672 
@@ -306,9 +287,6 @@ resource "aws_security_group_rule" "rule18" {
   cidr_blocks = ["0.0.0.0/0"]
   security_group_id = aws_security_group.example_sg.id
 }
-
-
-
 resource "aws_security_group_rule" "egress_all" {
   type              = "egress"
   from_port         = 0
@@ -317,8 +295,6 @@ resource "aws_security_group_rule" "egress_all" {
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.example_sg.id
 }
-
-
 resource "aws_security_group_rule" "rule2" {
   type        = "ingress"
   from_port   = 5672
@@ -327,7 +303,6 @@ resource "aws_security_group_rule" "rule2" {
   cidr_blocks = ["0.0.0.0/0"]
   security_group_id = aws_security_group.example_sg.id
 }
-
 resource "aws_security_group_rule" "ssh" {
   type        = "ingress"
   from_port   = 22
@@ -336,7 +311,6 @@ resource "aws_security_group_rule" "ssh" {
   cidr_blocks = ["0.0.0.0/0"]
   security_group_id = aws_security_group.example_sg.id
 }
-
 resource "aws_security_group_rule" "http" {
   type        = "ingress"
   from_port   = 80
@@ -345,7 +319,6 @@ resource "aws_security_group_rule" "http" {
   cidr_blocks = ["0.0.0.0/0"]
   security_group_id = aws_security_group.example_sg.id
 }
-
 resource "aws_security_group_rule" "https" {
   type        = "ingress"
   from_port   = 443
@@ -355,13 +328,13 @@ resource "aws_security_group_rule" "https" {
   security_group_id = aws_security_group.example_sg.id
 }
 
+# Automatic group with a minimum and maximum number of instances, with a launch template.
 resource "aws_autoscaling_group" "example" {
   name                 = "example-asg"
   max_size             = 3
   min_size             = 1
   desired_capacity     = 2
-  vpc_zone_identifier  = ["subnet-02afb2885082aabaf", "subnet-024bee7d7c80272a9"]
-
+  vpc_zone_identifier  = ["subnet-0667527d3f2978cb7", "subnet-0b638d2e760eadecc"]
 
   launch_template {
     id      = aws_launch_template.example.id
@@ -369,6 +342,7 @@ resource "aws_autoscaling_group" "example" {
   }
 }
 
+# A policy that defines automatic capacity adjustment.
 resource "aws_autoscaling_policy" "example" {
   name                   = "example_policy"
   scaling_adjustment     = 2
@@ -377,6 +351,7 @@ resource "aws_autoscaling_policy" "example" {
   autoscaling_group_name = aws_autoscaling_group.example.name
 }
 
+# Set up alerts for high or low CPU usage, which trigger Auto Scaling policies based on usage.
 resource "aws_cloudwatch_metric_alarm" "example_high_cpu" {
   alarm_name          = "high-cpu-usage"
   comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -389,7 +364,6 @@ resource "aws_cloudwatch_metric_alarm" "example_high_cpu" {
   alarm_description   = "This metric monitors ec2 cpu usage"
   alarm_actions = [aws_autoscaling_policy.example.arn]
 }
-
 resource "aws_cloudwatch_metric_alarm" "example_low_cpu" {
   alarm_name          = "low-cpu-usage"
   comparison_operator = "LessThanOrEqualToThreshold"
@@ -405,4 +379,3 @@ resource "aws_cloudwatch_metric_alarm" "example_low_cpu" {
   }
   alarm_actions = [aws_autoscaling_policy.example.arn]
 }
-
